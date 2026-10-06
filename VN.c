@@ -53,6 +53,13 @@ typedef struct VN_Text
     bool finished_scrolling;
 }VN_Text;
 
+typedef struct VN_TextBox
+{
+    SDL_FRect rect;
+    SDL_Texture* texture;
+    int text_offset;
+}VN_TextBox;
+
 typedef struct VN_Context
 {
     const char* error;
@@ -74,12 +81,31 @@ typedef struct VN_Context
     
     VN_Event events[VN_MAX_EVENTS];
     int num_events;
+    
+    VN_TextBox textbox;
 }VN_Context;
 
 
 // TODO : thread safety ?
 VN_Context* VN_context = NULL;
 
+
+bool VN_InitTextbox()
+{
+    VN_context->textbox.rect.x = VN_context->width / 50;
+    VN_context->textbox.rect.y = VN_context->height / 1.6;
+    VN_context->textbox.rect.w = VN_context->width - VN_context->textbox.rect.x * 2;
+    VN_context->textbox.rect.h = VN_context->height - VN_context->textbox.rect.x - VN_context->textbox.rect.y;
+    
+    SDL_Surface* surface = SDL_CreateSurface(VN_context->textbox.rect.w, VN_context->textbox.rect.h, SDL_PIXELFORMAT_RGBA32);
+    SDL_FillSurfaceRect(surface, NULL, SDL_MapRGBA(SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32), NULL, 0, 0, 0, 130));
+    VN_context->textbox.texture = SDL_CreateTextureFromSurface(VN_context->renderer, surface);
+    SDL_DestroySurface(surface);
+    
+    VN_context->textbox.text_offset = VN_context->textbox.rect.x;
+    
+    return true;
+}
 
 VN_Context* VN_Init(const char* name, int width, int height)
 {
@@ -92,6 +118,9 @@ VN_Context* VN_Init(const char* name, int width, int height)
         
     if (!SDL_CreateWindowAndRenderer(name, width, height, SDL_WINDOW_RESIZABLE, &VN_context->window, &VN_context->renderer))
         goto error;
+     
+    VN_context->width = width;
+    VN_context->height = height;
         
     SDL_SetRenderLogicalPresentation(VN_context->renderer, width, height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_SetRenderDrawBlendMode(VN_context->renderer, SDL_BLENDMODE_BLEND);
@@ -99,7 +128,7 @@ VN_Context* VN_Init(const char* name, int width, int height)
     if (!TTF_Init())
         goto error;
     
-    VN_context->font = TTF_OpenFont("font.otf", height / 15); // TODO : right font size
+    VN_context->font = TTF_OpenFont("font.otf", height / 20); // TODO : right font size
     if (!VN_context->font)
         goto error;
     
@@ -112,8 +141,7 @@ VN_Context* VN_Init(const char* name, int width, int height)
         VN_context->text.lines[i] = TTF_CreateText(VN_context->text_engine, VN_context->font, "", 0);
     }
     
-    VN_context->width = width;
-    VN_context->height = height;
+    VN_InitTextbox();
     
     return VN_context;
     
@@ -278,6 +306,9 @@ bool VN_RemoveForeground(VN_Image* image, uint64_t fade_time)
     {
         if (VN_context->foregrounds[i].image == image)
         {
+            if (VN_context->foregrounds[i].disappearing)
+                return true;
+            
             VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
             VN_context->foregrounds[i].disappearing = true;
             
@@ -296,8 +327,11 @@ bool VN_ClearForegrounds(uint64_t fade_time)
         
     for (int i = 0; i < VN_context->num_foregrounds; i++)
     {
-        VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
-        VN_context->foregrounds[i].disappearing = true;
+        if (!VN_context->foregrounds[i].disappearing)
+        {
+            VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
+            VN_context->foregrounds[i].disappearing = true;
+        }
     }
     
     return true;
@@ -325,12 +359,12 @@ bool VN_SetText(const char* text)
     while ((position != length) && (VN_context->text.num_lines < VN_MAX_LINES))
     {
         size_t size;
-        TTF_MeasureString(VN_context->font, text + position, 0, VN_context->width, NULL, &size);
+        TTF_MeasureString(VN_context->font, text + position, 0, VN_context->textbox.rect.w - VN_context->textbox.text_offset * 2, NULL, &size);
         
-        if ((position + size != length) && (text[position + size] != ' '))
+        if ((position + size != length) && (text[position + size] != ' ')) // find space backwards
         {
             size_t size_cpy = size;
-            while (size >= 0)
+            while (size > 0)
             {
                 size--;
                 if (text[position + size] == ' ')
@@ -341,7 +375,7 @@ bool VN_SetText(const char* text)
                 size = size_cpy;
         }
         
-        if ((position + size != length) && (text[position + size] == ' '))
+        if ((position + size != length) && (text[position + size] == ' ')) // include the final space
             size++;
         
         TTF_SetTextString(VN_context->text.lines[VN_context->text.num_lines], text + position, size);
@@ -526,6 +560,8 @@ bool VN_RenderText(void)
 {
     if (VN_context->text.num_lines == 0)
         return true;
+        
+    SDL_RenderTexture(VN_context->renderer, VN_context->textbox.texture, NULL, &VN_context->textbox.rect);
 
     int font_size = TTF_GetFontSize(VN_context->font);
     int displayed_width = 0;
@@ -537,15 +573,18 @@ bool VN_RenderText(void)
         int line_width;
         TTF_GetTextSize(VN_context->text.lines[i], &line_width, NULL);
         
+        int x = VN_context->textbox.rect.x + VN_context->textbox.text_offset;
+        int y = VN_context->textbox.rect.y + font_size * i + VN_context->textbox.text_offset;
+        
         if (displayed_width + line_width < max_width)
         {
-            TTF_DrawRendererText(VN_context->text.lines[i], 0.0f, 100 + font_size * i);
+            TTF_DrawRendererText(VN_context->text.lines[i], x, y);
         }
         else
         {
-            SDL_Rect clip_rect = {0, 100 + font_size * i, max_width - displayed_width, font_size};
+            SDL_Rect clip_rect = {x, y, max_width - displayed_width, font_size};
             SDL_SetRenderClipRect(VN_context->renderer, &clip_rect);
-            TTF_DrawRendererText(VN_context->text.lines[i], 0.0f, 100 + font_size * i);
+            TTF_DrawRendererText(VN_context->text.lines[i], x, y);
             SDL_SetRenderClipRect(VN_context->renderer, NULL);
             break;
         }

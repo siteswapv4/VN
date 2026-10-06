@@ -1,20 +1,30 @@
 #include "VN.h"
 #include <stdlib.h>
+#include <stdio.h>
 
-#define NUM_TEXTS 3
+#define NUM_TEXTS 4
 const char* texts[] =
 {
-    "This is the first text and I'm gonna make it longer by writing more characters in it just this way",
-    "This is the second text, I'm gonna make it longer this time again and I believe this is gonna work fine",
-    "This is the final text, the testing is done for now and I hope this text will display properly"
+    "Hey !",
+    "I'm in a terrible mood today.",
+    "Do you think this Visual Novel project is ever gonna be completed ?",
+    "I hope so."
 };
 
 int main(int argc, char** argv)
 {
-    VN_Init("test", 500, 500);
+    VN_Init("test", 640, 480);
 
     int current_text = 0;    
     VN_SetText(texts[current_text]);
+    
+    VN_Image* background = VN_LoadImage("background.jpg");
+    
+    VN_Image* sprite1 = VN_LoadImage("sprite1.png");
+    VN_Image* sprite2 = VN_LoadImage("sprite2.png");
+    
+    VN_SetBackground(background, 500);
+    VN_SetForeground(sprite1, (VN_Point){-100, 0}, 500);
     
     while (true)
     {
@@ -31,10 +41,23 @@ int main(int argc, char** argv)
                 {
                     current_text++;
                     VN_SetText(texts[current_text]);
+                    
+                    if (current_text % 2 != 0)
+                    {
+                        VN_RemoveForeground(sprite1, 500);
+                        VN_SetForeground(sprite2, (VN_Point){200, 0}, 500);
+                    }
+                    else
+                    {
+                        VN_RemoveForeground(sprite2, 500);
+                        VN_SetForeground(sprite1, (VN_Point){-100, 0}, 500);
+                    }
                 }
                 else
                 {
                     VN_ClearText();
+                    VN_ClearForegrounds(500);
+                    VN_SetBackground(NULL, 500);
                 }
             }
         }
