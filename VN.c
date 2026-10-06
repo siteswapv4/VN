@@ -13,12 +13,13 @@
 
 #define VN_MAX_EVENTS 255
 #define VN_MAX_FOREGROUNDS 255
+#define VN_MAX_LINES 50
 
-typedef struct VN_Fade
+typedef struct VN_Duration
 {
     uint64_t start;
     uint64_t end;
-}VN_Fade;
+}VN_Duration;
 
 typedef struct VN_Image
 {
@@ -30,7 +31,7 @@ typedef struct VN_Background
     VN_Image* image;
     VN_Image* old_image;
     
-    VN_Fade fade;
+    VN_Duration fade;
 }VN_Background;
 
 typedef struct VN_Foreground
@@ -38,19 +39,26 @@ typedef struct VN_Foreground
     VN_Image* image;
     VN_Point position;
     
-    VN_Fade fade;
+    VN_Duration fade;
     bool disappearing;
 }VN_Foreground;
 
 typedef struct VN_Text
 {
-    TTF_Text* text;
-    bool confirm;
+    TTF_Text* lines[VN_MAX_LINES];
+    int num_lines;
+    
+    int total_width;
+    VN_Duration scroll_time;
+    bool finished_scrolling;
 }VN_Text;
 
 typedef struct VN_Context
 {
     const char* error;
+
+    int width;
+    int height;
 
     SDL_Window* window;
     SDL_Renderer* renderer;
@@ -99,8 +107,13 @@ VN_Context* VN_Init(const char* name, int width, int height)
     if (!VN_context->text_engine)
         goto error;
         
-    VN_context->text.text = TTF_CreateText(VN_context->text_engine, VN_context->font, "", 0);
-    TTF_SetTextWrapWidth(VN_context->text.text, width);
+    for (int i = 0; i < VN_MAX_LINES; i++)
+    {
+        VN_context->text.lines[i] = TTF_CreateText(VN_context->text_engine, VN_context->font, "", 0);
+    }
+    
+    VN_context->width = width;
+    VN_context->height = height;
     
     return VN_context;
     
@@ -214,9 +227,9 @@ error:
 }
 
 
-VN_Fade VN_NewFade(uint64_t fade_time)
+VN_Duration VN_NewDuration(uint64_t time)
 {
-    return (VN_Fade){SDL_GetTicks(), SDL_GetTicks() + fade_time};
+    return (VN_Duration){SDL_GetTicks(), SDL_GetTicks() + time};
 }
 
 
@@ -227,7 +240,7 @@ bool VN_SetBackground(VN_Image* image, uint64_t fade_time)
 
     VN_context->background.old_image = VN_context->background.image;
     VN_context->background.image = image;
-    VN_context->background.fade = VN_NewFade(fade_time);
+    VN_context->background.fade = VN_NewDuration(fade_time);
 
     return true;
 }
@@ -245,7 +258,7 @@ bool VN_SetForeground(VN_Image* image, VN_Point position, uint64_t fade_time)
     
     foreground->image = image;
     foreground->position = position;
-    foreground->fade = VN_NewFade(fade_time);
+    foreground->fade = VN_NewDuration(fade_time);
     foreground->disappearing = false;
     
     VN_context->num_foregrounds++;
@@ -265,7 +278,7 @@ bool VN_RemoveForeground(VN_Image* image, uint64_t fade_time)
     {
         if (VN_context->foregrounds[i].image == image)
         {
-            VN_context->foregrounds[i].fade = VN_NewFade(fade_time);
+            VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
             VN_context->foregrounds[i].disappearing = true;
             
             return true;
@@ -283,21 +296,63 @@ bool VN_ClearForegrounds(uint64_t fade_time)
         
     for (int i = 0; i < VN_context->num_foregrounds; i++)
     {
-        VN_context->foregrounds[i].fade = VN_NewFade(fade_time);
+        VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
         VN_context->foregrounds[i].disappearing = true;
     }
     
     return true;
 }
 
+uint64_t VN_StringLengthToScrollTime(size_t length)
+{
+    return length * 30;
+}
 
-bool VN_SetText(const char* text, bool confirm)
+bool VN_SetText(const char* text)
 {
     if (!VN_context)
         return false;
         
-    TTF_SetTextString(VN_context->text.text, text, 0);
-    VN_context->text.confirm = confirm;
+    size_t utf8_length = SDL_utf8strlen(text);
+    size_t length = SDL_strlen(text);
+    
+    VN_context->text.scroll_time = VN_NewDuration(VN_StringLengthToScrollTime(utf8_length));
+
+    size_t position = 0;    
+    VN_context->text.num_lines = 0;
+    VN_context->text.total_width = 0;
+    
+    while ((position != length) && (VN_context->text.num_lines < VN_MAX_LINES))
+    {
+        size_t size;
+        TTF_MeasureString(VN_context->font, text + position, 0, VN_context->width, NULL, &size);
+        
+        if ((position + size != length) && (text[position + size] != ' '))
+        {
+            size_t size_cpy = size;
+            while (size >= 0)
+            {
+                size--;
+                if (text[position + size] == ' ')
+                    break;
+            }
+            
+            if (size == 0)
+                size = size_cpy;
+        }
+        
+        if ((position + size != length) && (text[position + size] == ' '))
+            size++;
+        
+        TTF_SetTextString(VN_context->text.lines[VN_context->text.num_lines], text + position, size);
+        int width;
+        TTF_GetTextSize(VN_context->text.lines[VN_context->text.num_lines], &width, NULL);
+        VN_context->text.total_width += width;
+        position += size;
+        VN_context->text.num_lines++;
+    }
+    
+    VN_context->text.finished_scrolling = false;
     
     return true;
 }
@@ -307,8 +362,7 @@ bool VN_ClearText(void)
     if (!VN_context)
         return false;
         
-    TTF_SetTextString(VN_context->text.text, "", 0);
-    VN_context->text.confirm = false;
+    VN_context->text.num_lines = 0;
     
     return true;
 }
@@ -328,12 +382,12 @@ error:
     return false;
 }
 
-float VN_GetFadeCoeff(VN_Fade fade)
+float VN_GetDurationCoeff(VN_Duration duration)
 {
-    if (SDL_GetTicks() >= fade.end)
+    if (SDL_GetTicks() >= duration.end)
         return 1.0f;
     else
-        return 1.0f - (float)(fade.end - SDL_GetTicks()) / (float)(fade.end - fade.start);
+        return 1.0f - (float)(duration.end - SDL_GetTicks()) / (float)(duration.end - duration.start);
 }
 
 bool VN_ProcessSDLEvent(SDL_Event* event)
@@ -344,12 +398,32 @@ bool VN_ProcessSDLEvent(SDL_Event* event)
         vn_event.type = VN_EVENT_QUIT;
         VN_PushEvent(&vn_event);
     }
-    else if ((event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) && (event->button.button == SDL_BUTTON_LEFT))
+    else if (((event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) && (event->button.button == SDL_BUTTON_LEFT)) ||
+             ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat) && (event->key.scancode == SDL_SCANCODE_RETURN)))
     {
-        VN_Event vn_event = {0};
-        vn_event.type = VN_EVENT_TEXT_CONFIRMED;
-        VN_PushEvent(&vn_event);
+        if (VN_context->text.finished_scrolling)
+        {
+            VN_Event vn_event = {0};
+            vn_event.type = VN_EVENT_TEXT_CONFIRMED;
+            VN_PushEvent(&vn_event);
+        }
+        else
+        {
+            VN_context->text.scroll_time = VN_NewDuration(0);
+            VN_context->text.finished_scrolling = true;
+            
+            VN_Event vn_event = {0};
+            vn_event.type = VN_EVENT_TEXT_FINISHED_SCROLLING;
+            VN_PushEvent(&vn_event);
+        }
     }
+    else if ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat))
+    {
+        if (event->key.scancode == SDL_SCANCODE_F11)
+            SDL_SetWindowFullscreen(VN_context->window, !(SDL_GetWindowFlags(VN_context->window) & SDL_WINDOW_FULLSCREEN));
+    }
+    
+    return true;
 }
 
 bool VN_CheckBackground(void)
@@ -357,7 +431,7 @@ bool VN_CheckBackground(void)
     if (!VN_context->background.old_image)
         return true;
 
-    if (VN_GetFadeCoeff(VN_context->background.fade) >= 1.0f)
+    if (VN_GetDurationCoeff(VN_context->background.fade) >= 1.0f)
     {
         VN_context->background.old_image = NULL;
     }
@@ -369,11 +443,27 @@ bool VN_CheckForegrounds(void)
 {
     for (int i = VN_context->num_foregrounds - 1; i >= 0; i--)
     {
-        if ((VN_context->foregrounds[i].disappearing) && (VN_GetFadeCoeff(VN_context->foregrounds[i].fade) >= 1.0f))
+        if ((VN_context->foregrounds[i].disappearing) && (VN_GetDurationCoeff(VN_context->foregrounds[i].fade) >= 1.0f))
         {
             SDL_memmove(VN_context->foregrounds + i, VN_context->foregrounds + i + 1, (VN_context->num_foregrounds - (i + 1)) * sizeof(VN_Foreground));
             VN_context->num_foregrounds--;
         }
+    }
+    
+    return true;
+}
+
+bool VN_CheckText(void)
+{
+    if ((VN_context->text.num_lines == 0) || (VN_context->text.finished_scrolling))
+        return true;
+        
+    if (VN_GetDurationCoeff(VN_context->text.scroll_time) >= 1.0f)
+    {
+        VN_context->text.finished_scrolling = true;
+        VN_Event event = {0};
+        event.type = VN_EVENT_TEXT_FINISHED_SCROLLING;
+        VN_PushEvent(&event);
     }
     
     return true;
@@ -398,7 +488,7 @@ bool VN_RenderBackground(void)
         SDL_RenderTexture(VN_context->renderer, VN_context->background.old_image->texture, NULL, NULL);
     }
     
-    float coeff = VN_GetFadeCoeff(VN_context->background.fade);
+    float coeff = VN_GetDurationCoeff(VN_context->background.fade);
     
     if (VN_context->background.image)
     {
@@ -420,7 +510,7 @@ bool VN_RenderForegrounds(void)
     {
         VN_Foreground* foreground = &VN_context->foregrounds[i];
         
-        float coeff = VN_GetFadeCoeff(foreground->fade);
+        float coeff = VN_GetDurationCoeff(foreground->fade);
         if (foreground->disappearing)
             coeff = 1.0f - coeff;
         
@@ -434,7 +524,36 @@ bool VN_RenderForegrounds(void)
 
 bool VN_RenderText(void)
 {
-    TTF_DrawRendererText(VN_context->text.text, 0.0f, 400.0f);
+    if (VN_context->text.num_lines == 0)
+        return true;
+
+    int font_size = TTF_GetFontSize(VN_context->font);
+    int displayed_width = 0;
+    float coeff = VN_GetDurationCoeff(VN_context->text.scroll_time);
+    int max_width = VN_context->text.total_width * coeff;
+    
+    for (int i = 0; i < VN_context->text.num_lines; i++)
+    {
+        int line_width;
+        TTF_GetTextSize(VN_context->text.lines[i], &line_width, NULL);
+        
+        if (displayed_width + line_width < max_width)
+        {
+            TTF_DrawRendererText(VN_context->text.lines[i], 0.0f, 100 + font_size * i);
+        }
+        else
+        {
+            SDL_Rect clip_rect = {0, 100 + font_size * i, max_width - displayed_width, font_size};
+            SDL_SetRenderClipRect(VN_context->renderer, &clip_rect);
+            TTF_DrawRendererText(VN_context->text.lines[i], 0.0f, 100 + font_size * i);
+            SDL_SetRenderClipRect(VN_context->renderer, NULL);
+            break;
+        }
+        
+        displayed_width += line_width;
+    }
+    
+    return true;
 }
 
 bool VN_Step(void)
@@ -450,6 +569,7 @@ bool VN_Step(void)
 
     VN_CheckBackground();
     VN_CheckForegrounds();
+    VN_CheckText();
 
     VN_RenderClear();
     

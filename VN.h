@@ -6,6 +6,7 @@
 typedef enum VN_EventType
 {
     VN_EVENT_QUIT,
+    VN_EVENT_TEXT_FINISHED_SCROLLING,
     VN_EVENT_TEXT_CONFIRMED,
     VN_EVENT_CHOICE_MADE
 }VN_EventType;
@@ -62,7 +63,7 @@ bool VN_RemoveForeground(VN_Image* foreground, uint64_t fade_time);
 bool VN_ClearForegrounds(uint64_t fade_time);
 
 
-bool VN_SetText(const char* text, bool confirm);
+bool VN_SetText(const char* text);
 
 bool VN_ClearText(void);
 
