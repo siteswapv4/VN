@@ -34,7 +34,7 @@ typedef struct VN_Audio VN_Audio;
 typedef struct VN_Context VN_Context;
 
 
-VN_Context* VN_Init(const char* name, int width, int height);
+VN_Context* VN_Init(const char* name, int width, int height, const char* font_path);
 
 bool VN_Quit(void);
 

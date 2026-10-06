@@ -157,7 +157,7 @@ bool VN_InitChoicebox()
     return true;
 }
 
-VN_Context* VN_Init(const char* name, int width, int height)
+VN_Context* VN_Init(const char* name, int width, int height, const char* font_path)
 {
     VN_context = SDL_calloc(1, sizeof(VN_Context));
     if (!VN_context)
@@ -178,7 +178,7 @@ VN_Context* VN_Init(const char* name, int width, int height)
     if (!TTF_Init())
         goto error;
     
-    VN_context->font = TTF_OpenFont("font.otf", height / 20); // TODO : right font size
+    VN_context->font = TTF_OpenFont(font_path, height / 20); // TODO : right font size
     if (!VN_context->font)
         goto error;
     
