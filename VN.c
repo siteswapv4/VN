@@ -14,6 +14,7 @@
 #define VN_MAX_EVENTS 255
 #define VN_MAX_FOREGROUNDS 255
 #define VN_MAX_LINES 50
+#define VN_MAX_CHOICES 10
 
 typedef struct VN_Duration
 {
@@ -59,6 +60,13 @@ typedef struct VN_TextBox
     SDL_Texture* texture;
     int text_offset;
 }VN_TextBox;
+
+typedef struct VN_Choice
+{
+    TTF_Text* text[VN_MAX_CHOICES];
+    int num_options;
+    int selected;
+}VN_Choice;
 
 typedef struct VN_Context
 {
@@ -279,6 +287,9 @@ bool VN_SetForeground(VN_Image* image, VN_Point position, uint64_t fade_time)
     if (!VN_context)
         return false;
         
+    if (image == NULL)
+        VN_ERROR("Foreground is NULL");
+        
     if (VN_context->num_foregrounds >= VN_MAX_FOREGROUNDS)
         VN_ERROR("Foreground number limit");
         
@@ -302,20 +313,24 @@ bool VN_RemoveForeground(VN_Image* image, uint64_t fade_time)
     if (!VN_context)
         return false;
         
+    bool removed = false;
+        
     for (int i = 0; i < VN_context->num_foregrounds; i++)
     {
         if (VN_context->foregrounds[i].image == image)
         {
-            if (VN_context->foregrounds[i].disappearing)
-                return true;
-            
-            VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
-            VN_context->foregrounds[i].disappearing = true;
-            
-            return true;
+            if (!VN_context->foregrounds[i].disappearing)
+            {
+                VN_context->foregrounds[i].fade = VN_NewDuration(fade_time);
+                VN_context->foregrounds[i].disappearing = true;
+                removed = true;
+            }
         }
     }
         
+    if (removed)
+        return true;
+
     VN_context->error = "Foreground not found";
     return false;
 }

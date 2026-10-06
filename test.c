@@ -25,6 +25,7 @@ int main(int argc, char** argv)
     
     VN_SetBackground(background, 500);
     VN_SetForeground(sprite1, (VN_Point){-100, 0}, 500);
+    VN_SetForeground(sprite2, (VN_Point){200, 0}, 500);
     
     while (true)
     {
