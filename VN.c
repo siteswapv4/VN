@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
+#include <SDL3_mixer/SDL_mixer.h>
 
 
 #define VN_ERROR(ERR) \
@@ -63,10 +64,23 @@ typedef struct VN_TextBox
 
 typedef struct VN_Choice
 {
-    TTF_Text* text[VN_MAX_CHOICES];
-    int num_options;
+    TTF_Text* lines[VN_MAX_CHOICES];
+    SDL_FRect rects[VN_MAX_CHOICES];
+    int num_lines;
     int selected;
 }VN_Choice;
+
+typedef struct VN_ChoiceBox
+{
+    SDL_FRect rect;
+    SDL_Texture* texture;
+    int text_offset;
+}VN_ChoiceBox;
+
+typedef struct VN_Audio
+{
+    MIX_Audio* audio;
+}VN_Audio;
 
 typedef struct VN_Context
 {
@@ -81,22 +95,39 @@ typedef struct VN_Context
     TTF_Font* font;
     TTF_TextEngine* text_engine;
     
+    MIX_Mixer* mixer;
+    MIX_Track* sound_track;
+    MIX_Track* music_track;
+    
     VN_Background background;
     VN_Foreground foregrounds[VN_MAX_FOREGROUNDS];
     int num_foregrounds;
     
     VN_Text text;
+    VN_TextBox textbox;
     
     VN_Event events[VN_MAX_EVENTS];
     int num_events;
     
-    VN_TextBox textbox;
+    VN_Choice choice;
+    VN_ChoiceBox choicebox;
+    
+    int64_t delay; // < 0 for no delay
 }VN_Context;
 
 
 // TODO : thread safety ?
 VN_Context* VN_context = NULL;
 
+SDL_Texture* VN_CreateColoredTexture(int width, int height, SDL_Color color)
+{
+    SDL_Surface* surface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32);
+    SDL_FillSurfaceRect(surface, NULL, SDL_MapRGBA(SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32), NULL, color.r, color.g, color.b, color.a));
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(VN_context->renderer, surface);
+    SDL_DestroySurface(surface);
+    
+    return texture;
+}
 
 bool VN_InitTextbox()
 {
@@ -105,13 +136,24 @@ bool VN_InitTextbox()
     VN_context->textbox.rect.w = VN_context->width - VN_context->textbox.rect.x * 2;
     VN_context->textbox.rect.h = VN_context->height - VN_context->textbox.rect.x - VN_context->textbox.rect.y;
     
-    SDL_Surface* surface = SDL_CreateSurface(VN_context->textbox.rect.w, VN_context->textbox.rect.h, SDL_PIXELFORMAT_RGBA32);
-    SDL_FillSurfaceRect(surface, NULL, SDL_MapRGBA(SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32), NULL, 0, 0, 0, 130));
-    VN_context->textbox.texture = SDL_CreateTextureFromSurface(VN_context->renderer, surface);
-    SDL_DestroySurface(surface);
+    VN_context->textbox.texture = VN_CreateColoredTexture(VN_context->textbox.rect.w, VN_context->textbox.rect.h, (SDL_Color){0, 0, 0, 130});
     
     VN_context->textbox.text_offset = VN_context->textbox.rect.x;
     
+    return true;
+}
+
+bool VN_InitChoicebox()
+{
+    VN_context->choicebox.rect.x = VN_context->width / 50;
+    VN_context->choicebox.rect.y = VN_context->choicebox.rect.x;
+    VN_context->choicebox.rect.w = VN_context->width - VN_context->choicebox.rect.x * 2;
+    VN_context->choicebox.rect.h = VN_context->height - VN_context->choicebox.rect.y * 2;
+    
+    VN_context->choicebox.texture = VN_CreateColoredTexture(VN_context->choicebox.rect.w, VN_context->choicebox.rect.w, (SDL_Color){0, 0, 0, 130});
+    
+    VN_context->choicebox.text_offset = VN_context->choicebox.rect.x;
+
     return true;
 }
 
@@ -149,7 +191,30 @@ VN_Context* VN_Init(const char* name, int width, int height)
         VN_context->text.lines[i] = TTF_CreateText(VN_context->text_engine, VN_context->font, "", 0);
     }
     
+    for (int i = 0; i < VN_MAX_CHOICES; i++)
+    {
+        VN_context->choice.lines[i] = TTF_CreateText(VN_context->text_engine, VN_context->font, "", 0);
+    }
+    
+    if (!MIX_Init())
+        goto error;
+        
+    VN_context->mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, NULL);
+    if (!VN_context->mixer)
+        goto error;
+        
+    VN_context->music_track = MIX_CreateTrack(VN_context->mixer);
+    if (!VN_context->music_track)
+        goto error;
+        
+    VN_context->sound_track = MIX_CreateTrack(VN_context->mixer);
+    if (!VN_context->sound_track)
+        goto error;
+    
     VN_InitTextbox();
+    VN_InitChoicebox();
+    
+    VN_context->delay = -1;
     
     return VN_context;
     
@@ -165,6 +230,18 @@ bool VN_Quit(void)
     if (!VN_context)
         return false;
         
+    for (int i = 0; i < VN_MAX_LINES; i++)
+    {
+        if (VN_context->text.lines[i])
+            TTF_DestroyText(VN_context->text.lines[i]);
+    }
+    
+    for (int i = 0; i < VN_MAX_CHOICES; i++)
+    {
+        if (VN_context->choice.lines[i])
+            TTF_DestroyText(VN_context->choice.lines[i]);
+    }
+        
     if (VN_context->text_engine)
         TTF_DestroyRendererTextEngine(VN_context->text_engine);
         
@@ -172,6 +249,23 @@ bool VN_Quit(void)
         TTF_CloseFont(VN_context->font);
         
     TTF_Quit();
+    
+    if (VN_context->music_track)
+        MIX_DestroyTrack(VN_context->music_track);
+        
+    if (VN_context->sound_track)
+        MIX_DestroyTrack(VN_context->sound_track);
+        
+    if (VN_context->mixer)
+        MIX_DestroyMixer(VN_context->mixer);
+        
+    MIX_Quit();
+    
+    if (VN_context->choicebox.texture)
+        SDL_DestroyTexture(VN_context->choicebox.texture);
+        
+    if (VN_context->textbox.texture)
+        SDL_DestroyTexture(VN_context->textbox.texture);
         
     if (VN_context->renderer)
         SDL_DestroyRenderer(VN_context->renderer);
@@ -352,6 +446,71 @@ bool VN_ClearForegrounds(uint64_t fade_time)
     return true;
 }
 
+
+VN_Audio* VN_LoadAudio(const char* path)
+{
+    if (!VN_context)
+        return NULL;
+        
+    VN_Audio* audio = SDL_calloc(1, sizeof(VN_Audio));
+    audio->audio = MIX_LoadAudio(VN_context->mixer, path, false);
+    if (!audio->audio)
+        VN_ERROR(SDL_GetError());
+        
+    return audio;
+    
+error:
+    VN_DestroyAudio(audio);
+    return NULL;
+}
+
+bool VN_DestroyAudio(VN_Audio* audio)
+{
+    if (!VN_context)
+        return false;
+        
+    if (audio)
+    {
+        if (audio->audio)
+            MIX_DestroyAudio(audio->audio);
+        
+        SDL_free(audio);
+    }
+    
+    return true;
+}
+
+bool VN_SetAudio(VN_Audio* audio, MIX_Track* track, int num_loops)
+{
+    MIX_SetTrackAudio(track, audio ? audio->audio : NULL);
+    if (audio)
+    {
+        MIX_PlayTrack(track, 0);
+        MIX_SetTrackLoops(track, num_loops);
+    }
+    else
+        MIX_PauseTrack(track);
+        
+    return true;
+}
+
+bool VN_SetMusic(VN_Audio* audio)
+{
+    if (!VN_context)
+        return false;
+        
+    return VN_SetAudio(audio, VN_context->music_track, -1);
+}
+
+bool VN_SetSound(VN_Audio* audio, int num_loops)
+{
+    if (!VN_context)
+        return false;
+    
+    return VN_SetAudio(audio, VN_context->sound_track, num_loops);
+}
+
+
 uint64_t VN_StringLengthToScrollTime(size_t length)
 {
     return length * 30;
@@ -361,6 +520,8 @@ bool VN_SetText(const char* text)
 {
     if (!VN_context)
         return false;
+        
+    VN_ClearChoice();
         
     size_t utf8_length = SDL_utf8strlen(text);
     size_t length = SDL_strlen(text);
@@ -417,6 +578,59 @@ bool VN_ClearText(void)
 }
 
 
+bool VN_SetChoice(const char* const* choices, int num_choices)
+{
+    if (!VN_context)
+        return false;
+        
+    if (num_choices > VN_MAX_CHOICES)
+        VN_ERROR("Too many choices");
+        
+    VN_ClearText();
+    VN_context->choice.selected = -1;
+    VN_context->choice.num_lines = num_choices;
+    
+    for (int i = 0; i < num_choices; i++)
+    {
+        TTF_SetTextString(VN_context->choice.lines[i], choices[i], 0);
+    
+        int width, height;
+        TTF_GetTextSize(VN_context->choice.lines[i], &width, &height);
+        
+        VN_context->choice.rects[i].x = VN_context->choicebox.rect.x + VN_context->choicebox.rect.w / 2 - width / 2;
+        VN_context->choice.rects[i].y = VN_context->height / 2 - height / 2 + height * (i - num_choices / 2) * 1.5f;
+        VN_context->choice.rects[i].w = width;
+        VN_context->choice.rects[i].h = height;
+    }
+    
+    return true;
+
+error:
+    return false;
+}
+
+bool VN_ClearChoice(void)
+{
+    if (!VN_context)
+        return false;
+        
+    VN_context->choice.num_lines = 0;
+    
+    return true;
+}
+
+
+bool VN_SetDelay(uint64_t time)
+{
+    if (!VN_context)
+        return false;
+        
+    VN_context->delay = SDL_GetTicks() + time;
+
+    return true;
+}
+
+
 bool VN_PushEvent(VN_Event* event)
 {
     if (VN_context->num_events == VN_MAX_EVENTS)
@@ -431,12 +645,55 @@ error:
     return false;
 }
 
+
+bool VN_SendDelayEvent(bool force)
+{
+    if (VN_context->delay < 0)
+        return false;
+        
+    if ((SDL_GetTicks() >= VN_context->delay) || force)
+    {
+        VN_Event event = {0};
+        event.type = VN_EVENT_DELAY_ELAPSED;
+        VN_PushEvent(&event);
+        
+        VN_context->delay = -1;
+    }
+    
+    return true;
+}
+
 float VN_GetDurationCoeff(VN_Duration duration)
 {
     if (SDL_GetTicks() >= duration.end)
         return 1.0f;
     else
         return 1.0f - (float)(duration.end - SDL_GetTicks()) / (float)(duration.end - duration.start);
+}
+
+bool VN_SkipBackgroundFading(void)
+{
+    VN_context->background.fade = VN_NewDuration(0);
+
+    return true;
+}
+
+bool VN_SkipForegroundsFading(void)
+{
+    for (int i = 0; i < VN_context->num_foregrounds; i++)
+    {
+        VN_context->foregrounds[i].fade = VN_NewDuration(0);
+    }
+
+    return true;
+}
+
+bool VN_SkipFadings(void)
+{
+    VN_SkipBackgroundFading();
+    VN_SkipForegroundsFading();
+
+    return true;
 }
 
 bool VN_ProcessSDLEvent(SDL_Event* event)
@@ -450,26 +707,93 @@ bool VN_ProcessSDLEvent(SDL_Event* event)
     else if (((event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) && (event->button.button == SDL_BUTTON_LEFT)) ||
              ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat) && (event->key.scancode == SDL_SCANCODE_RETURN)))
     {
-        if (VN_context->text.finished_scrolling)
+        VN_SkipFadings();
+        VN_SendDelayEvent(true);
+        
+        if (VN_context->text.num_lines > 0)
         {
-            VN_Event vn_event = {0};
-            vn_event.type = VN_EVENT_TEXT_CONFIRMED;
-            VN_PushEvent(&vn_event);
+            if (VN_context->text.finished_scrolling)
+            {
+                VN_Event vn_event = {0};
+                vn_event.type = VN_EVENT_TEXT_CONFIRMED;
+                VN_PushEvent(&vn_event);
+            }
+            else
+            {
+                VN_context->text.scroll_time = VN_NewDuration(0);
+                VN_context->text.finished_scrolling = true;
+                
+                VN_Event vn_event = {0};
+                vn_event.type = VN_EVENT_TEXT_FINISHED_SCROLLING;
+                VN_PushEvent(&vn_event);
+            }
         }
-        else
+        else if (VN_context->choice.num_lines > 0)
         {
-            VN_context->text.scroll_time = VN_NewDuration(0);
-            VN_context->text.finished_scrolling = true;
+            if (VN_context->choice.selected >= 0)
+            {
+                VN_Event vn_event = {0};
+                vn_event.type = VN_EVENT_CHOICE_MADE;
+                vn_event.choice = VN_context->choice.selected;
+                VN_PushEvent(&vn_event);
+            }
+        }
+    }
+    else if (event->type == SDL_EVENT_MOUSE_MOTION)
+    {
+        if (VN_context->choice.num_lines > 0)
+        {
+            SDL_FPoint position = {event->motion.x, event->motion.y};
+            bool found = false;
             
-            VN_Event vn_event = {0};
-            vn_event.type = VN_EVENT_TEXT_FINISHED_SCROLLING;
-            VN_PushEvent(&vn_event);
+            for (int i = 0; i < VN_context->choice.num_lines; i++)
+            {
+                if (SDL_PointInRectFloat(&position, &VN_context->choice.rects[i]))
+                {
+                    VN_context->choice.selected = i;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found)
+                VN_context->choice.selected = -1;
         }
     }
     else if ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat))
     {
         if (event->key.scancode == SDL_SCANCODE_F11)
+        {
             SDL_SetWindowFullscreen(VN_context->window, !(SDL_GetWindowFlags(VN_context->window) & SDL_WINDOW_FULLSCREEN));
+        }
+        else if (event->key.scancode == SDL_SCANCODE_UP)
+        {
+            if (VN_context->choice.num_lines > 0)
+            {
+                if (VN_context->choice.selected < 0)
+                {
+                    VN_context->choice.selected = 0;
+                }
+                else if (VN_context->choice.selected > 0)
+                {
+                    VN_context->choice.selected--;
+                }
+            }
+        }
+        else if (event->key.scancode == SDL_SCANCODE_DOWN)
+        {
+            if (VN_context->choice.num_lines > 0)
+            {
+                if (VN_context->choice.selected < 0)
+                {
+                    VN_context->choice.selected = 0;
+                }
+                else if (VN_context->choice.selected + 1 < VN_context->choice.num_lines)
+                {
+                    VN_context->choice.selected++;
+                }
+            }
+        }
     }
     
     return true;
@@ -610,6 +934,30 @@ bool VN_RenderText(void)
     return true;
 }
 
+bool VN_RenderChoice(void)
+{
+    if (VN_context->choice.num_lines == 0)
+        return true;
+        
+    SDL_RenderTexture(VN_context->renderer, VN_context->choicebox.texture, NULL, &VN_context->choicebox.rect);
+    
+    for (int i = 0; i < VN_context->choice.num_lines; i++)
+    {
+        if (VN_context->choice.selected == i)
+        {
+            TTF_SetTextColor(VN_context->choice.lines[i], 200, 0, 0, 255);
+        }
+        else
+        {
+            TTF_SetTextColor(VN_context->choice.lines[i], 255, 255, 255, 255);
+        }
+        
+        TTF_DrawRendererText(VN_context->choice.lines[i], VN_context->choice.rects[i].x, VN_context->choice.rects[i].y);
+    }
+    
+    return true;
+}
+
 bool VN_Step(void)
 {
     if (!VN_context)
@@ -624,6 +972,7 @@ bool VN_Step(void)
     VN_CheckBackground();
     VN_CheckForegrounds();
     VN_CheckText();
+    VN_SendDelayEvent(false);
 
     VN_RenderClear();
     
@@ -631,6 +980,7 @@ bool VN_Step(void)
     VN_RenderForegrounds();
     
     VN_RenderText();
+    VN_RenderChoice();
 
     VN_RenderPresent();
     
