@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "VN.h"
 
@@ -205,24 +206,50 @@ typedef union VNDS_Instruction
 char* VNDS_ReadLine(const char** str)
 {
     const char* start = *str;
-    const char* pos = *str;
+    const char* end = strpbrk(start, "\r\n");
     
-    while ((*pos != '\0') && (*pos != '\r') && (*pos != '\n'))
-        pos++;
-        
-    if ((pos - start == 0) && (*pos == '\0'))
-        return NULL;
-        
-    if (*pos == '\r')
+    if (!end)
     {
-        if (*(pos + 1) == '\n')
-            pos++;
+        *str = start + strlen(start);
+        if (*str == start)
+            return NULL;
+        else
+            return strdup(start); 
     }
     
-    if (*pos != '\0')
-        pos++;
+    *str = end + 1;
+    
+    if (*end == '\r' && *(*str) == '\n')
+        (*str)++;
         
-    *str = pos;
+    char* line = malloc(end - start + 1);
+    line[end - start] = '\0';
+    memcpy(line, start, end - start);
+    
+    return line;
+}
+
+void VNDS_TrimString(char *str)
+{
+    char *start = str;
+    char *end;
+
+    while (*start && isspace((unsigned char)*start))
+        start++;
+
+    if (*start == '\0')
+    {
+        *str = '\0';
+        return;
+    }
+
+    end = start + strlen(start) - 1;
+
+    while (end > start && isspace((unsigned char)*end))
+        end--;
+
+    memmove(str, start, (size_t)(end - start + 1));
+    str[end - start + 1] = '\0';
 }
 
 VNDS_Instruction* VNDS_LoadScript(const char* script, int* num_instructions)
@@ -231,11 +258,20 @@ VNDS_Instruction* VNDS_LoadScript(const char* script, int* num_instructions)
     VNDS_Instruction* instructions = calloc(instruction_capacity, sizeof(VNDS_Instruction));
     *num_instructions = 0;
     
-    char* line = VNDS_ReadLine(script);
+    char* line = VNDS_ReadLine(&script);
     while (line)
     {
+        VNDS_TrimString(line);
+        for (int i = 0; i < VNDS_INSTRUCTION_COUNT; i++)
+        {
+            if (strncmp(line, VNDS_INSTRUCTION_TYPE_STRING[i], strlen(VNDS_INSTRUCTION_TYPE_STRING[i])) == 0)
+            {
+                
+            }
+        }
+    
         free(line);
-        line = VNDS_ReadLine(script);
+        line = VNDS_ReadLine(&script);
     }
     
     return instructions;
@@ -250,7 +286,7 @@ uint8_t* VNDS_LoadFile(const char* path, size_t* ret_size)
     uint8_t* buff = malloc(size + 1);
     buff[size] = 0;
     fseek(fp, 0, SEEK_SET);
-    fread(buff, 1, size, fp);
+    fread(buff, size, 1, fp);
     fclose(fp);
     if (ret_size)
         *ret_size = size;
@@ -262,7 +298,7 @@ int main(int argc, char** argv)
 {
     char* script = VNDS_LoadFile("main.scr", NULL);
 
-    int num_instruction = 0;
+    int num_instructions = 0;
     VNDS_Instruction* instructions = VNDS_LoadScript(script, &num_instructions);
     
     return EXIT_SUCCESS;    
