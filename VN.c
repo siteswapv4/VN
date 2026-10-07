@@ -705,7 +705,8 @@ bool VN_ProcessSDLEvent(SDL_Event* event)
         VN_PushEvent(&vn_event);
     }
     else if (((event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) && (event->button.button == SDL_BUTTON_LEFT)) ||
-             ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat) && (event->key.scancode == SDL_SCANCODE_RETURN)))
+             ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat) && (event->key.scancode == SDL_SCANCODE_RETURN)) || 
+             ((event->type == SDL_EVENT_KEY_DOWN) && (event->key.scancode == SDL_SCANCODE_A)))
     {
         VN_SkipFadings();
         VN_SendDelayEvent(true);
@@ -907,13 +908,14 @@ bool VN_RenderText(void)
     float coeff = VN_GetDurationCoeff(VN_context->text.scroll_time);
     int max_width = VN_context->text.total_width * coeff;
     
+    int y = VN_context->textbox.rect.y + VN_context->textbox.text_offset;
+    
     for (int i = 0; i < VN_context->text.num_lines; i++)
     {
-        int line_width;
-        TTF_GetTextSize(VN_context->text.lines[i], &line_width, NULL);
+        int line_width, line_height;
+        TTF_GetTextSize(VN_context->text.lines[i], &line_width, &line_height);
         
         int x = VN_context->textbox.rect.x + VN_context->textbox.text_offset;
-        int y = VN_context->textbox.rect.y + font_size * i + VN_context->textbox.text_offset;
         
         if (displayed_width + line_width < max_width)
         {
@@ -921,13 +923,14 @@ bool VN_RenderText(void)
         }
         else
         {
-            SDL_Rect clip_rect = {x, y, max_width - displayed_width, font_size};
+            SDL_Rect clip_rect = {x, y, max_width - displayed_width, line_height};
             SDL_SetRenderClipRect(VN_context->renderer, &clip_rect);
             TTF_DrawRendererText(VN_context->text.lines[i], x, y);
             SDL_SetRenderClipRect(VN_context->renderer, NULL);
             break;
         }
         
+        y += line_height;
         displayed_width += line_width;
     }
     
