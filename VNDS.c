@@ -277,6 +277,7 @@ bool VNDS_SetBackground(void* data_split)
         fade = VNDS_StringToInt(split->splits[2]) * VNDS_FRAME_MS;
     
     VN_ClearForegrounds(0);
+    VN_SetBackground(NULL, 0);
     VN_SetBackground(background, fade);
     
     return true;
