@@ -5,11 +5,9 @@
 #include <ctype.h>
 #include <time.h>
 
-/* For SDL PropertiesID and SDL_IOStream
- * Could replace the 2 with a less heavy dependency later
- * but since VN depends on it it's not that bad for now
- */
+#define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 
 #include "VNDS_utils.h"
 #include "VN.h"
@@ -145,7 +143,7 @@ bool VNDS_LoadScript(VNDS_String name)
     if (VNDS_context->script.data)
         free(VNDS_context->script.data);
     
-    VNDS_context->script.data = VNDS_LoadFile(path, NULL);
+    VNDS_context->script.data = (char*)VNDS_LoadFile(path, NULL);
     VNDS_context->script.position = VNDS_context->script.data;
     
     free(path);
@@ -173,6 +171,8 @@ bool VNDS_ClearEverything()
     VN_ClearForegrounds(0);
     VN_SetMusic(NULL);
     VN_SetSound(NULL, 0);
+    
+    return true;
 }
 
 VN_Image* VNDS_LoadBackground(VNDS_String string_name)
@@ -478,7 +478,7 @@ bool VNDS_SetVarInternal(const char* left, const char* modifier, const char* rig
     }
     
     char* res_str;
-    asprintf(&res_str, "%d", &res);
+    asprintf(&res_str, "%d", res);
     return SDL_SetPointerPropertyWithCleanup(VNDS_context->variables, left, res_str, VNDS_FreeProperty, NULL);
 }
 
@@ -671,6 +671,8 @@ bool VNDS_ClearText(void* data_split)
 bool VNDS_SetLabel(void* data_split)
 {
     VNDS_context->wait = VNDS_WAIT_NONE;
+    
+    return true;
 }
 
 bool VNDS_GetImageSize()
@@ -680,7 +682,7 @@ bool VNDS_GetImageSize()
     uint8_t* data = VNDS_LoadFile(path, NULL);
     free(path);
     
-    const char* position = data;
+    const char* position = (char*)data;
     VNDS_String line;
     while (VNDS_ReadLine(&position, &line))
     {
@@ -712,8 +714,6 @@ bool VNDS_Parse()
         VNDS_TrimString(&line);
         if ((line.length == 0) || (line.data[0] == '#'))
             continue;
-            
-        SDL_Log("%.*s", (int)line.length, line.data);
         
         for (int i = 0; i < VNDS_INSTRUCTION_COUNT; i++)
         {
@@ -768,73 +768,82 @@ bool VNDS_Init(const char* novel_path)
     char* font_path;
     asprintf(&font_path, "%s/default.ttf", VNDS_context->novel_path);
     VN_Init("VNDS", VNDS_context->image_width, VNDS_context->image_height, VNDS_FileExists(font_path) ? font_path : "font.otf");
+    VN_PollSDLEvents(false);
     free(font_path);
     
     return true;
 }
 
-int main(int argc, char** argv)
+SDL_AppResult SDL_AppInit(void** userdata, int argc, char** argv)
 {
-    if (argc < 2)
-    {
-        fprintf(stderr, "no novel path\n");
-        return EXIT_FAILURE;
-    }
-
-    VNDS_Init(argv[1]);
+    VNDS_Init((argc < 2) ? "novel" : argv[1]);
     
     VNDS_Parse();
     
-    while (true)
+    return SDL_APP_CONTINUE;    
+}
+
+SDL_AppResult SDL_AppEvent(void* userdata, SDL_Event* event)
+{
+    VN_ProcessSDLEvent(event);
+
+    return SDL_APP_CONTINUE;
+}
+
+SDL_AppResult SDL_AppIterate(void* userdata)
+{
+    bool advance = false;
+    
+    VN_Event event;
+    while (VN_PollEvent(&event))
     {
-        bool advance = false;
-        
-        VN_Event event;
-        while (VN_PollEvent(&event))
+        if (event.type == VN_EVENT_QUIT)
+            return SDL_APP_SUCCESS;
+
+        if (event.type == VN_EVENT_DELAY_ELAPSED)
         {
-            if (event.type == VN_EVENT_QUIT)
-                return 0;
-            if (event.type == VN_EVENT_DELAY_ELAPSED)
+            if (VNDS_context->wait == VNDS_WAIT_DELAY)
+                advance = true;
+        }
+        else if (event.type == VN_EVENT_TEXT_FINISHED_SCROLLING)
+        {
+            if (VNDS_context->wait == VNDS_WAIT_TEXT_SCROLL)
             {
-                if (VNDS_context->wait == VNDS_WAIT_DELAY)
-                    advance = true;
-            }
-            else if (event.type == VN_EVENT_TEXT_FINISHED_SCROLLING)
-            {
-                if (VNDS_context->wait == VNDS_WAIT_TEXT_SCROLL)
-                {
-                    VN_ClearText();
-                    advance = true;
-                }
-            }
-            else if (event.type == VN_EVENT_TEXT_CONFIRMED)
-            {
-                if (VNDS_context->wait == VNDS_WAIT_TEXT_CONFIRM)
-                {
-                    VN_ClearText();
-                    VN_SetSound(NULL, 0);
-                    advance = true;
-                }
-            }
-            else if (event.type == VN_EVENT_CHOICE_MADE)
-            {
-                if (VNDS_context->wait == VNDS_WAIT_CHOICE)
-                {
-                    char* choice_string;
-                    asprintf(&choice_string, "%d", event.choice + 1);
-                    VNDS_SetVarInternal("selected", "=", choice_string);
-                    free(choice_string);
-                    VN_ClearChoice();
-                    advance = true;
-                }
+                VN_SetDelay(1000);
+                VNDS_context->wait = VNDS_WAIT_DELAY;
             }
         }
-        
-        if (advance)
-            VNDS_Parse();
-    
-        VN_Step();
+        else if (event.type == VN_EVENT_TEXT_CONFIRMED)
+        {
+            if (VNDS_context->wait == VNDS_WAIT_TEXT_CONFIRM)
+            {
+                VN_ClearText();
+                VN_SetSound(NULL, 0);
+                advance = true;
+            }
+        }
+        else if (event.type == VN_EVENT_CHOICE_MADE)
+        {
+            if (VNDS_context->wait == VNDS_WAIT_CHOICE)
+            {
+                char* choice_string;
+                asprintf(&choice_string, "%d", event.choice + 1);
+                VNDS_SetVarInternal("selected", "=", choice_string);
+                free(choice_string);
+                VN_ClearChoice();
+                advance = true;
+            }
+        }
     }
     
-    return EXIT_SUCCESS;    
+    if (advance)
+        VNDS_Parse();
+
+    VN_Step();
+    
+    return SDL_APP_CONTINUE;
+}
+
+void SDL_AppQuit(void* userdata, SDL_AppResult result)
+{
 }

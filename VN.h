@@ -47,6 +47,11 @@ bool VN_SetContext(VN_Context* context);
 const char* VN_GetError(void);
 
 
+bool VN_PollSDLEvents(bool condition);
+
+bool VN_ProcessSDLEvent(void* event);
+
+
 bool VN_PollEvent(VN_Event* event);
 
 

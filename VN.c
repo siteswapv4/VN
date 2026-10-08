@@ -113,6 +113,7 @@ typedef struct VN_Context
     VN_ChoiceBox choicebox;
     
     int64_t delay; // < 0 for no delay
+    bool poll_sdl_events;
 }VN_Context;
 
 
@@ -178,7 +179,7 @@ VN_Context* VN_Init(const char* name, int width, int height, const char* font_pa
     if (!TTF_Init())
         goto error;
     
-    VN_context->font = TTF_OpenFont(font_path, height / 20); // TODO : right font size
+    VN_context->font = TTF_OpenFont(font_path, height / 24); // TODO : right font size
     if (!VN_context->font)
         goto error;
     
@@ -215,6 +216,7 @@ VN_Context* VN_Init(const char* name, int width, int height, const char* font_pa
     VN_InitChoicebox();
     
     VN_context->delay = -1;
+    VN_context->poll_sdl_events = true;
     
     return VN_context;
     
@@ -288,7 +290,12 @@ VN_Context* VN_GetContext(void)
 
 bool VN_SetContext(VN_Context* context)
 {
+    if (!VN_context)
+        return false;
+        
     VN_context = context;
+    
+    return true;
 }
 
 
@@ -300,6 +307,15 @@ const char* VN_GetError(void)
     return VN_context->error;
 }
 
+bool VN_PollSDLEvents(bool condition)
+{
+    if (!VN_context)
+        return false;
+        
+    VN_context->poll_sdl_events = condition;
+    
+    return true;
+}
 
 bool VN_PollEvent(VN_Event* event)
 {
@@ -696,8 +712,14 @@ bool VN_SkipFadings(void)
     return true;
 }
 
-bool VN_ProcessSDLEvent(SDL_Event* event)
+bool VN_ProcessSDLEvent(void* data)
 {
+    if (!VN_context)
+        return false;
+
+    SDL_Event* event = data;
+    SDL_ConvertEventToRenderCoordinates(VN_context->renderer, event);
+
     if (event->type == SDL_EVENT_QUIT)
     {
         VN_Event vn_event = {0};
@@ -706,7 +728,7 @@ bool VN_ProcessSDLEvent(SDL_Event* event)
     }
     else if (((event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) && (event->button.button == SDL_BUTTON_LEFT)) ||
              ((event->type == SDL_EVENT_KEY_DOWN) && (!event->key.repeat) && (event->key.scancode == SDL_SCANCODE_RETURN)) || 
-             ((event->type == SDL_EVENT_KEY_DOWN) && (event->key.scancode == SDL_SCANCODE_A)))
+             ((event->type == SDL_EVENT_KEY_DOWN) && (event->key.scancode == SDL_SCANCODE_S)))
     {
         VN_SkipFadings();
         VN_SendDelayEvent(true);
@@ -966,11 +988,13 @@ bool VN_Step(void)
     if (!VN_context)
         return false;
 
-    SDL_Event event;
-    while (SDL_PollEvent(&event))
+    if (VN_context->poll_sdl_events)
     {
-        SDL_ConvertEventToRenderCoordinates(VN_context->renderer, &event);
-        VN_ProcessSDLEvent(&event);
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            VN_ProcessSDLEvent(&event);
+        }
     }
 
     VN_CheckBackground();
