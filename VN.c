@@ -969,6 +969,7 @@ bool VN_Step(void)
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
+        SDL_ConvertEventToRenderCoordinates(VN_context->renderer, &event);
         VN_ProcessSDLEvent(&event);
     }
 

@@ -14,7 +14,7 @@
 #include "VNDS_utils.h"
 #include "VN.h"
 
-#define VNDS_FRAME_MS 30
+#define VNDS_FRAME_MS 16
 
 #define VNDS_DS_WIDTH 256
 #define VNDS_DS_HEIGHT 192
@@ -167,6 +167,14 @@ void VNDS_DestroyAudio(void* userdata, void* audio)
     VN_DestroyAudio(audio);
 }
 
+bool VNDS_ClearEverything()
+{
+    VN_SetBackground(NULL, 0);
+    VN_ClearForegrounds(0);
+    VN_SetMusic(NULL);
+    VN_SetSound(NULL, 0);
+}
+
 VN_Image* VNDS_LoadBackground(VNDS_String string_name)
 {
     char* name = VNDS_StringToCharArray(string_name);
@@ -300,7 +308,7 @@ bool VNDS_SetForeground(void* data_split)
     position.y *=  VNDS_context->image_height / (float)VNDS_DS_HEIGHT;
     int fade = 0; // cannot set fade ?
     
-    VN_ClearForegrounds(0);
+    //VN_ClearForegrounds(0);
     VN_SetForeground(foreground, position, fade);
 
     return true;
@@ -325,11 +333,14 @@ bool VNDS_SetSound(void* data_split)
         return false;
         
         
-    int num_loops = 0;
     if (split->num_splits >= 3)
-        num_loops = VNDS_StringToInt(split->splits[2]);
-
-    VN_SetSound(sound, num_loops);
+    {
+        int num_loops = VNDS_StringToInt(split->splits[2]);
+        if (num_loops != 0)
+            VN_SetSound(sound, num_loops - 1);
+    }
+    else
+        VN_SetSound(sound, 0);
 
     return true;
 }
@@ -575,6 +586,7 @@ bool VNDS_Jump(void* data_split)
     if (split->num_splits >= 3)
         label = VNDS_StringToCharArray(split->splits[2]);
         
+    VNDS_ClearEverything();
     VNDS_LoadScript(split->splits[1]);
     /* Strings have to be rebuilt after this */
     
@@ -628,6 +640,8 @@ bool VNDS_Goto(void* data_split)
     if (split->num_splits < 2)
         return false;
         
+    VNDS_ClearEverything();
+        
     const char* position = VNDS_context->script.data;
     VNDS_String line;
     while (VNDS_ReadLine(&position, &line))
@@ -670,6 +684,12 @@ bool VNDS_GetImageSize()
     while (VNDS_ReadLine(&position, &line))
     {
         VNDS_StringSplit split;
+        if (VNDS_SplitString(line, &split, "x") && (split.num_splits == 2))
+        {
+            VNDS_context->image_width = VNDS_StringToInt(split.splits[0]);
+            VNDS_context->image_height = VNDS_StringToInt(split.splits[1]);
+        }
+    
         if (VNDS_SplitString(line, &split, "=") && (split.num_splits == 2))
         {
             if (strncmp(split.splits[0].data, "width", split.splits[0].length) == 0)
@@ -731,6 +751,8 @@ bool VNDS_Init(const char* novel_path)
     VNDS_context = calloc(1, sizeof(VNDS_Context));
     
     VNDS_context->novel_path = strdup(novel_path);
+    VNDS_context->image_width = VNDS_DS_WIDTH;
+    VNDS_context->image_height = VNDS_DS_HEIGHT;
     
     VNDS_context->backgrounds = SDL_CreateProperties();
     VNDS_context->foregrounds = SDL_CreateProperties();
