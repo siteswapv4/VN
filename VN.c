@@ -88,6 +88,10 @@ typedef struct VN_Context
 
     int width;
     int height;
+    
+    float window_scale;
+    int window_offset_x;
+    int window_offset_y;
 
     SDL_Window* window;
     SDL_Renderer* renderer;
@@ -119,6 +123,16 @@ typedef struct VN_Context
 
 // TODO : thread safety ?
 VN_Context* VN_context = NULL;
+
+bool VN_ChangeFontSize()
+{
+    int width, height;
+    SDL_GetRenderOutputSize(VN_context->renderer, &width, &height);
+    
+    TTF_SetFontSize(VN_context->font, height / 24);
+
+    return true;
+}
 
 SDL_Texture* VN_CreateColoredTexture(int width, int height, SDL_Color color)
 {
@@ -179,9 +193,11 @@ VN_Context* VN_Init(const char* name, int width, int height, const char* font_pa
     if (!TTF_Init())
         goto error;
     
-    VN_context->font = TTF_OpenFont(font_path, height / 24); // TODO : right font size
+    VN_context->font = TTF_OpenFont(font_path, 20); // TODO : right font size
     if (!VN_context->font)
         goto error;
+        
+    VN_ChangeFontSize();
     
     VN_context->text_engine = TTF_CreateRendererTextEngine(VN_context->renderer);
     if (!VN_context->text_engine)
@@ -532,6 +548,29 @@ uint64_t VN_StringLengthToScrollTime(size_t length)
     return length * 30;
 }
 
+bool VN_GetTextSize(TTF_Text* text, int* width, int* height)
+{
+    int text_width, text_height;
+    TTF_GetTextSize(text, &text_width, &text_height);
+    
+    if (width)
+        *width = text_width / VN_context->window_scale;
+        
+    if (height)
+        *height = text_height / VN_context->window_scale;
+    
+    return true;
+}
+
+bool VN_MeasureString(TTF_Font* font, const char* text, size_t size, int max_width, int* measured_width, size_t* measured_size)
+{
+    TTF_MeasureString(font, text, size, max_width * VN_context->window_scale, measured_width, measured_size);
+    if (measured_width)
+        *measured_width /= VN_context->window_scale;
+        
+    return true;
+}
+
 bool VN_SetText(const char* text)
 {
     if (!VN_context)
@@ -551,7 +590,7 @@ bool VN_SetText(const char* text)
     while ((position != length) && (VN_context->text.num_lines < VN_MAX_LINES))
     {
         size_t size;
-        TTF_MeasureString(VN_context->font, text + position, 0, VN_context->textbox.rect.w - VN_context->textbox.text_offset * 2, NULL, &size);
+        VN_MeasureString(VN_context->font, text + position, 0, VN_context->textbox.rect.w - VN_context->textbox.text_offset * 2, NULL, &size);
         
         if ((position + size != length) && (text[position + size] != ' ')) // find space backwards
         {
@@ -572,7 +611,7 @@ bool VN_SetText(const char* text)
         
         TTF_SetTextString(VN_context->text.lines[VN_context->text.num_lines], text + position, size);
         int width;
-        TTF_GetTextSize(VN_context->text.lines[VN_context->text.num_lines], &width, NULL);
+        VN_GetTextSize(VN_context->text.lines[VN_context->text.num_lines], &width, NULL);
         VN_context->text.total_width += width;
         position += size;
         VN_context->text.num_lines++;
@@ -593,6 +632,21 @@ bool VN_ClearText(void)
     return true;
 }
 
+bool VN_CalculateChoiceRects(void)
+{    
+    for (int i = 0; i < VN_context->choice.num_lines; i++)
+    {
+        int width, height;
+        VN_GetTextSize(VN_context->choice.lines[i], &width, &height);
+        
+        VN_context->choice.rects[i].x = VN_context->choicebox.rect.x + VN_context->choicebox.rect.w / 2 - width / 2;
+        VN_context->choice.rects[i].y = VN_context->height / 2 - height / 2 + height * (i - VN_context->choice.num_lines / 2) * 1.5f;
+        VN_context->choice.rects[i].w = width;
+        VN_context->choice.rects[i].h = height;
+    }
+
+    return true;
+}
 
 bool VN_SetChoice(const char* const* choices, int num_choices)
 {
@@ -609,15 +663,9 @@ bool VN_SetChoice(const char* const* choices, int num_choices)
     for (int i = 0; i < num_choices; i++)
     {
         TTF_SetTextString(VN_context->choice.lines[i], choices[i], 0);
-    
-        int width, height;
-        TTF_GetTextSize(VN_context->choice.lines[i], &width, &height);
-        
-        VN_context->choice.rects[i].x = VN_context->choicebox.rect.x + VN_context->choicebox.rect.w / 2 - width / 2;
-        VN_context->choice.rects[i].y = VN_context->height / 2 - height / 2 + height * (i - num_choices / 2) * 1.5f;
-        VN_context->choice.rects[i].w = width;
-        VN_context->choice.rects[i].h = height;
     }
+    
+    VN_CalculateChoiceRects();
     
     return true;
 
@@ -818,6 +866,10 @@ bool VN_ProcessSDLEvent(void* data)
             }
         }
     }
+    else if (event->type == SDL_EVENT_WINDOW_RESIZED)
+    {
+        VN_ChangeFontSize();
+    }
     
     return true;
 }
@@ -918,6 +970,26 @@ bool VN_RenderForegrounds(void)
     return true;
 }
 
+bool VN_RenderTextObject(TTF_Text* text, VN_Point position, int max_width)
+{
+    SDL_SetRenderLogicalPresentation(VN_context->renderer, 0, 0,  SDL_LOGICAL_PRESENTATION_DISABLED);
+
+    int posx = position.x * VN_context->window_scale + VN_context->window_offset_x;
+    int posy = position.y * VN_context->window_scale + VN_context->window_offset_y;
+
+    int text_width, text_height;
+    TTF_GetTextSize(text, &text_width, &text_height);
+    SDL_Rect rect = {posx, posy, (max_width != -1) ? max_width * VN_context->window_scale : text_width, text_height};
+
+    SDL_SetRenderClipRect(VN_context->renderer, &rect);
+    TTF_DrawRendererText(text, posx, posy);
+    SDL_SetRenderClipRect(VN_context->renderer, NULL);
+
+    SDL_SetRenderLogicalPresentation(VN_context->renderer, VN_context->width, VN_context->height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    
+    return true;
+}
+
 bool VN_RenderText(void)
 {
     if (VN_context->text.num_lines == 0)
@@ -935,20 +1007,17 @@ bool VN_RenderText(void)
     for (int i = 0; i < VN_context->text.num_lines; i++)
     {
         int line_width, line_height;
-        TTF_GetTextSize(VN_context->text.lines[i], &line_width, &line_height);
+        VN_GetTextSize(VN_context->text.lines[i], &line_width, &line_height);
         
         int x = VN_context->textbox.rect.x + VN_context->textbox.text_offset;
         
         if (displayed_width + line_width < max_width)
         {
-            TTF_DrawRendererText(VN_context->text.lines[i], x, y);
+            VN_RenderTextObject(VN_context->text.lines[i], (VN_Point){x, y}, -1);
         }
         else
         {
-            SDL_Rect clip_rect = {x, y, max_width - displayed_width, line_height};
-            SDL_SetRenderClipRect(VN_context->renderer, &clip_rect);
-            TTF_DrawRendererText(VN_context->text.lines[i], x, y);
-            SDL_SetRenderClipRect(VN_context->renderer, NULL);
+            VN_RenderTextObject(VN_context->text.lines[i], (VN_Point){x, y}, max_width - displayed_width);
             break;
         }
         
@@ -969,16 +1038,30 @@ bool VN_RenderChoice(void)
     for (int i = 0; i < VN_context->choice.num_lines; i++)
     {
         if (VN_context->choice.selected == i)
-        {
             TTF_SetTextColor(VN_context->choice.lines[i], 200, 0, 0, 255);
-        }
         else
-        {
             TTF_SetTextColor(VN_context->choice.lines[i], 255, 255, 255, 255);
-        }
         
-        TTF_DrawRendererText(VN_context->choice.lines[i], VN_context->choice.rects[i].x, VN_context->choice.rects[i].y);
+        VN_RenderTextObject(VN_context->choice.lines[i], (VN_Point){VN_context->choice.rects[i].x, VN_context->choice.rects[i].y}, -1);
     }
+    
+    return true;
+}
+
+bool VN_CalculateWindowSize()
+{
+    int window_width;
+    int window_height;
+    SDL_GetRenderOutputSize(VN_context->renderer, &window_width, &window_height);
+
+    float window_scale_x = (float)window_width  / (float)VN_context->width;
+    float window_scale_y = (float)window_height / (float)VN_context->height;
+    
+    VN_context->window_scale = SDL_min(window_scale_x, window_scale_y);
+    int window_scaled_width  = SDL_roundf(VN_context->width  * VN_context->window_scale);
+    int window_scaled_height = SDL_roundf(VN_context->height * VN_context->window_scale);
+    VN_context->window_offset_x = SDL_roundf((window_width  - window_scaled_width)  * 0.5f);
+    VN_context->window_offset_y = SDL_roundf((window_height - window_scaled_height) * 0.5f);
     
     return true;
 }
@@ -987,6 +1070,8 @@ bool VN_Step(void)
 {
     if (!VN_context)
         return false;
+        
+    VN_CalculateWindowSize();
 
     if (VN_context->poll_sdl_events)
     {
