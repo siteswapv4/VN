@@ -118,6 +118,7 @@ typedef struct VN_Context
     
     int64_t delay; // < 0 for no delay
     bool poll_sdl_events;
+    bool window_size_changed;
 }VN_Context;
 
 
@@ -126,10 +127,7 @@ VN_Context* VN_context = NULL;
 
 bool VN_ChangeFontSize()
 {
-    int width, height;
-    SDL_GetRenderOutputSize(VN_context->renderer, &width, &height);
-    
-    TTF_SetFontSize(VN_context->font, height / 24);
+    TTF_SetFontSize(VN_context->font, VN_context->height * VN_context->window_scale / 24);
 
     return true;
 }
@@ -186,7 +184,8 @@ VN_Context* VN_Init(const char* name, int width, int height, const char* font_pa
      
     VN_context->width = width;
     VN_context->height = height;
-        
+    VN_context->window_scale = 1.0f;    
+    
     SDL_SetRenderLogicalPresentation(VN_context->renderer, width, height, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_SetRenderDrawBlendMode(VN_context->renderer, SDL_BLENDMODE_BLEND);
     
@@ -760,6 +759,24 @@ bool VN_SkipFadings(void)
     return true;
 }
 
+bool VN_CalculateWindowSize()
+{
+    int window_width;
+    int window_height;
+    SDL_GetRenderOutputSize(VN_context->renderer, &window_width, &window_height);
+
+    float window_scale_x = (float)window_width  / (float)VN_context->width;
+    float window_scale_y = (float)window_height / (float)VN_context->height;
+    
+    VN_context->window_scale = SDL_min(window_scale_x, window_scale_y);
+    int window_scaled_width  = SDL_roundf(VN_context->width  * VN_context->window_scale);
+    int window_scaled_height = SDL_roundf(VN_context->height * VN_context->window_scale);
+    VN_context->window_offset_x = SDL_roundf((window_width  - window_scaled_width)  * 0.5f);
+    VN_context->window_offset_y = SDL_roundf((window_height - window_scaled_height) * 0.5f);
+    
+    return true;
+}
+
 bool VN_ProcessSDLEvent(void* data)
 {
     if (!VN_context)
@@ -868,7 +885,7 @@ bool VN_ProcessSDLEvent(void* data)
     }
     else if (event->type == SDL_EVENT_WINDOW_RESIZED)
     {
-        VN_ChangeFontSize();
+        VN_context->window_size_changed = true;
     }
     
     return true;
@@ -1048,30 +1065,17 @@ bool VN_RenderChoice(void)
     return true;
 }
 
-bool VN_CalculateWindowSize()
-{
-    int window_width;
-    int window_height;
-    SDL_GetRenderOutputSize(VN_context->renderer, &window_width, &window_height);
-
-    float window_scale_x = (float)window_width  / (float)VN_context->width;
-    float window_scale_y = (float)window_height / (float)VN_context->height;
-    
-    VN_context->window_scale = SDL_min(window_scale_x, window_scale_y);
-    int window_scaled_width  = SDL_roundf(VN_context->width  * VN_context->window_scale);
-    int window_scaled_height = SDL_roundf(VN_context->height * VN_context->window_scale);
-    VN_context->window_offset_x = SDL_roundf((window_width  - window_scaled_width)  * 0.5f);
-    VN_context->window_offset_y = SDL_roundf((window_height - window_scaled_height) * 0.5f);
-    
-    return true;
-}
-
 bool VN_Step(void)
 {
     if (!VN_context)
         return false;
         
-    VN_CalculateWindowSize();
+    if (VN_context->window_size_changed)
+    {
+        VN_CalculateWindowSize();
+        VN_ChangeFontSize();
+        VN_context->window_size_changed = false;
+    }
 
     if (VN_context->poll_sdl_events)
     {
